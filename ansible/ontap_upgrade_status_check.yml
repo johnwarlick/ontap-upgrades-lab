@@ -68,13 +68,6 @@
   - block: 
     - include_tasks: tasks/check_node_images.yml
     
-    # If it hasn't been uploaded yet, these tasks will fail
-    - block: 
-      - include_tasks: tasks/get_image_name_for_package.yml 
-
-      - include_tasks: tasks/check_if_new_package_is_default.yml
-      when: nodes_need_new_image | length == 0
-
     - name: Check for 'MAINT=<n>h Starting' autosupports within the last 4 hours
       netapp.ontap.na_ontap_rest_cli: 
         command: 'system/node/autosupport/history'
@@ -106,7 +99,7 @@
         upgrade_status: "in_pre_upgrade"
       when: 
         - failover_status | selectattr('possible','true') | list | length == failover_status | length
-        #- nodes_need_new_image | length > 0 or false in new_package_is_default
+        #- nodes_need_new_image | length > 0 
         - upgrade_status != 'not_started'
 
     # end block
@@ -121,7 +114,7 @@
       upgrade_status: "upgrade_in_progress"
     when: 
       - failover_status | selectattr('auto_giveback','defined') | map(attribute='auto_giveback') | unique | unique == [false]
-      - nodes_need_new_image | length == 0 or new_package_is_default | unique == [true] 
+      - nodes_need_new_image | length == 0  
       - nodes_list | map(attribute='version') | unique | length > 1 
           or node_states | length > 1 
           or failover_status | selectattr('possible', 'false') | list | length > 0 
