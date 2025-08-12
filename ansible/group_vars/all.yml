@@ -1,0 +1,7 @@
+ansible_python_interpreter: "{{ansible_playbook_python}}"
+ontap_base_domain: demo.netapp.com
+ontap_hostname: "{{ inventory_hostname }}.{{ ontap_base_domain }}"
+ontap_username: "{{ ontap_creds.username | default('admin')}}"
+ontap_password: "{{ ontap_creds.password | default(lookup('env', 'ONTAP_PASSWORD')) }}"
+https: true
+validate_certs: false

@@ -1,0 +1,27 @@
+---
+- name: Validate inventory via simple rest call
+  hosts: "{{ clusters | default('localhost') }}"
+  gather_facts: yes
+  connection: 'local'
+  collections:
+    - netapp.ontap
+  module_defaults:
+    group/netapp.ontap.netapp_ontap:
+      hostname: "{{ ontap_hostname }}"
+      username: "{{ ontap_username }}"
+      password: "{{ ontap_password }}"
+      https: "{{ https }}"
+      validate_certs: "{{ validate_certs }}"  
+  tasks:  
+  - name: Debug ontap_username and ontap_hostname 
+    ansible.builtin.debug: 
+      msg: "{{ ontap_username }} connecting to {{ ontap_hostname }}"
+
+  - name: Get cluster mgmt LIF(s) to test cluster authentication 
+    include_tasks: tasks/rest_info.yml
+    vars: 
+      gather_subset: 
+        - cluster
+      parameters:
+        fields: ['management_interfaces']
+

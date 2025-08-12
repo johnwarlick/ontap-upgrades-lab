@@ -1,0 +1,224 @@
+---
+- name: Pre-upgrade tasks for ONTAP Upgrade
+  hosts: "{{ clusters | default('localhost') }}"
+  gather_facts: no
+  connection: 'local'
+  collections:
+    - netapp.ontap
+  vars:
+    ontap_image: ""
+    ontap_package_version: ""
+    ontap_package_url: ""
+    node_image_no_update_in_progress_text: "There is no update/install in progress"
+    node_image_update_failure_text: "Failed"
+    node_image_update_success_text: ["Installation complete.","Success"]
+    upgrade_status: []
+  module_defaults:    
+    group/netapp.ontap.netapp_ontap:      
+      hostname: "{{ ontap_hostname }}"
+      username: "{{ ontap_username }}"
+      password: "{{ ontap_password }}"
+      https: "{{ https }}"
+      validate_certs: "{{ validate_certs }}"
+  pre_tasks: 
+    - name: "Log of upgrade_status"
+      ansible.builtin.debug:
+        var: upgrade_status[inventory_hostname]
+    
+    - name: Only run pre-upgrades if upgrade_status was not 'not_started' or 'in_pre_upgrade'
+      meta: end_host
+      when: 
+        - upgrade_status[inventory_hostname] != 'in_pre_upgrade' 
+        - upgrade_status[inventory_hostname] != 'not_started'
+
+  tasks:
+  - block: 
+    - name: Get cluster nodes info (`netapp.ontap.na_ontap_rest_info`)
+      include_tasks: tasks/rest_info.yml
+      vars: 
+        gather_subset: 
+          - cluster/nodes
+        fields: 
+          - "ha,state,version"
+
+    - name: Set nodes_list and nodes_info 
+      ansible.builtin.set_fact:
+        nodes_info: "{{ ontap_rest_info['cluster/nodes']['records'] }}"
+        nodes_count: "{{ ontap_rest_info['cluster/nodes']['num_records'] }}"
+        nodes_list: "{{ ontap_rest_info['cluster/nodes']['records'] | map(attribute='name') }}"
+    tags: always
+
+  - include_tasks: tasks/check_package_url.yml
+    tags: ["image", "upload_check"]
+
+  - name: Kick off autosupports 
+    block: 
+    - name: Set maint_hours based on number of nodes
+      ansible.builtin.set_fact:
+        maint_hours: "{{ (1.5 * nodes_count | int) | round | int }}"
+    
+    - name: Build autosupport_message variable
+      ansible.builtin.set_fact:
+        autosupport_message: >
+          MAINT={{ maint_hours }}h Starting Non-Disruptive Upgrade to {{ ontap_package_version }}
+    
+    # https://kb.netapp.com/onprem/ontap/os/How_to_suppress_automatic_case_creation_during_scheduled_maintenance_windows_-_ONTAP_9
+    - name: |
+        Trigger maintenance autosupports
+        (`netapp.ontap.na_ontap_autosupport_invoke` type: all message: '{{ autosupport_message }}')
+      netapp.ontap.na_ontap_autosupport_invoke:
+        autosupport_message: "{{ autosupport_message }}"
+        type: all
+
+    tags: ["autosupport"]
+
+  - name: "Disable autogiveback"
+    block: 
+    - name: |
+        Disable auto-giveback on all nodes 
+        (`storage failover modify -auto-giveback false -nodes *`)  
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'storage/failover'
+        params:   
+          node: "*"
+        body: 
+          auto-giveback: "false"
+        verb: "PATCH"
+      register: update_autogiveback 
+
+    - name: "Log of update_autogiveback"
+      ansible.builtin.debug: 
+        var: update_autogiveback
+
+    - name: |
+        Get auto-giveback status after update command
+        (`storage failover show -fields auto-giveback`)
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'storage/failover'
+        params: 
+          fields: 'auto-giveback'
+        verb: "GET"
+      register: confirm_autogiveback
+
+    - name: Set confirm_autogiveback var 
+      ansible.builtin.debug: 
+        var: confirm_autogiveback
+
+    - name: Set autogiveback_still_true check 
+      ansible.builtin.set_fact:
+        autogiveback_still_true: "{{ confirm_autogiveback.msg.records | selectattr('auto_giveback', 'equalto', true) | list }}"
+
+    - name: Fail playbook if auto-giveback is not equal to true on all nodes
+      ansible.builtin.fail: 
+        msg: "auto-giveback should be set to false on all nodes and is not. See logs above."
+      when: autogiveback_still_true | length > 0
+
+    tags: ["autogiveback"]
+       
+  - name: Get the image into each node's package repo
+    block:
+    - include_tasks: tasks/check_node_images.yml
+      vars: 
+        nodes_list: "{{ nodes_info }}"
+    - block: 
+      - name: log of nodes_need_new_image
+        ansible.builtin.debug:
+          var: nodes_need_new_image | map(attribute='name')
+        when: nodes_need_new_image is defined
+      
+      - name: >
+          Check on status for each node 
+          (system node image show-update-progress -node <node>) 
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'system/node/image/show-update-progress'
+          body: 
+            node: "{{ item.name }}"
+          verb: "POST"
+        register: check_if_node_image_upload_in_progress
+        loop: "{{ nodes_need_new_image }}"
+        loop_control: 
+          label: "{{ item.name}}"
+
+      - name: Build list of only nodes with no update already in progress 
+        ansible.builtin.set_fact: 
+          nodes_nothing_in_progress: "{{ check_if_node_image_upload_in_progress.results | 
+                  selectattr('msg.cli_output', 'search', node_image_no_update_in_progress_text) | 
+                  map(attribute='item')}}"
+
+      - name: Log of nodes_nothing_in_progress
+        ansible.builtin.debug: 
+          var: nodes_nothing_in_progress | map(attribute='name')
+
+      - name: >
+          "system node image update -node <node> -background true -package {{ ontap_package_url }} -replace-package true"
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'system/node/image/update'
+          params: 
+            node: "{{ item.name }}"
+          body:   
+            package: "{{ ontap_package_url }}"
+            replace-package: true
+            background: true
+          verb: "PATCH"
+        register: node_image_upload 
+        loop: "{{ nodes_nothing_in_progress }}"
+        loop_control: 
+          label: "{{ item.name}}"
+
+      - name: "Log of node_image_upload"
+        ansible.builtin.debug: 
+          var: node_image_upload.results | map(attribute='msg')
+      
+      - name: Give it 10 seconds
+        ansible.builtin.pause: 
+          seconds: 10 
+
+      - name: >
+          Check on status until we get success or failure
+          (system node image show-update-progress)
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'system/node/image/show-update-progress'
+          verb: "POST"
+        register: node_image_upload_progress
+        until: node_image_no_update_in_progress_text in node_image_upload_progress.msg.cli_output 
+            or node_image_update_failure_text in node_image_upload_progress.msg.cli_output
+        retries: 30
+        delay: 20
+
+      - name: 
+        ansible.builtin.debug: 
+          var: node_image_upload_progress
+
+      - name: "Fail playbook if '{{ node_image_update_failure_text }}' is found in command return"
+        ansible.builtin.fail: 
+          msg: "{{ node_image_upload_progress.msg.cli_output }}"
+        when: node_image_update_failure_text in node_image_upload_progress.msg.cli_output
+      
+      when: nodes_need_new_image is defined 
+
+    tags: ["image", "upload_to_nodes"]
+
+  - name: Set node images to {{ ontap_package_version }}
+    block: 
+
+    - include_tasks: tasks/get_image_name_for_package.yml 
+
+    - name: system image modify -node * -image {{ new_image_name }} -isdefault true
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'system/node/image'
+        params: 
+          node: "*"
+          image: "{{ new_image_name }}"
+        body: 
+          isdefault: true 
+        verb: "PATCH"
+      register: set_new_node_image
+
+    - include_tasks: tasks/check_if_new_package_is_default.yml
+
+    - name: Fail playbook if {{ new_image_name }} isn't set to default on every node
+      ansible.builtin.fail:
+        msg: "{{ new_image_name }} must be set as the default image for all nodes"
+      when: false in new_package_is_default
+
+    tags: ["image", "set_node_image"]

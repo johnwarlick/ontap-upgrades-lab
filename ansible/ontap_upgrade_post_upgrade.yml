@@ -1,0 +1,79 @@
+---
+- name: Post ONTAP Upgrade Steps
+  hosts: "{{ clusters | default('localhost') }}"
+  gather_facts: no
+  connection: 'local'
+  collections:
+    - netapp.ontap
+  vars:
+    autosupport_message: "MAINT=END Completed ONTAP Upgrade"
+  module_defaults:    
+    group/netapp.ontap.netapp_ontap:      
+      hostname: "{{ ontap_hostname }}"
+      username: "{{ ontap_username }}"
+      password: "{{ ontap_password }}"
+      https: "{{ https }}"
+      validate_certs: "{{ validate_certs }}"
+
+  tasks:    
+  - name: Run a final `net int revert *` just to be sure 
+    block: 
+    - netapp.ontap.na_ontap_rest_cli: 
+        command: 'network/interface/revert'
+        params: 
+          lif: "*"
+        verb: "PATCH"
+      register: net_int_revert
+    rescue: 
+    - name: "Pause for connection failure on net int revert *"
+      ansible.builtin.pause: 
+        seconds: 20
+
+  - name: "Re-enable autogiveback"
+    block: 
+    - name: storage failover modify -auto-giveback true -nodes *
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'storage/failover'
+        params:   
+          node: "*"
+        body: 
+          auto-giveback: "true"
+        verb: "PATCH"
+      register: update_autogiveback 
+
+    - name: "Log of update_autogiveback"
+      ansible.builtin.debug: 
+        var: update_autogiveback
+
+    - name: storage failover show -fields auto-giveback 
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'storage/failover'
+        params: 
+          fields: 'auto-giveback'
+        verb: "GET"
+      register: confirm_autogiveback
+
+    - name: Log of confirm_autogiveback 
+      ansible.builtin.debug: 
+        var: confirm_autogiveback.msg.records | dicts_to_table
+
+    - name: Set autogiveback_still_false check 
+      ansible.builtin.set_fact:
+        autogiveback_still_false: "{{ confirm_autogiveback.msg.records | selectattr('auto_giveback', 'equalto', false) | list }}"
+
+    - name: log of autogiveback_still_false
+      ansible.builtin.debug: 
+        var: autogiveback_still_false
+
+    - name: Fail playbook if auto-giveback is not equal to true on all nodes
+      ansible.builtin.fail: 
+        msg: "auto-giveback should be set to true on all nodes and is not. See logs above."
+      when: autogiveback_still_false | length > 0
+
+    tags: ["autogiveback"]
+  
+  - name: "End maintenance autosupports (-type all -message '{{ autosupport_message }}'"
+    na_ontap_autosupport_invoke:
+      autosupport_message: "{{ autosupport_message }}"
+      type: all
+    tags: ["autosupport"]

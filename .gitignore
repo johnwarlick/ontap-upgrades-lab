@@ -1,0 +1,13 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs
+__pycache__
+ansible/auth
+ansible/tmp
+ansible/test.txt
+pyenv.cfg
+.python-version
+.DS_Store
+*venv*

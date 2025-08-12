@@ -1,0 +1,28 @@
+- name: Verify cluster health (`cluster show`)
+  netapp.ontap.na_ontap_rest_cli: 
+    command: 'cluster'
+    params: 
+      fields: "health,eligibility"
+    verb: "GET"
+  register: get_cluster_health
+
+- name: Set cluster_health
+  ansible.builtin.set_fact: 
+    cluster_health: "{{ get_cluster_health.msg.records }}"
+    cluster_health_log: "{{ get_cluster_health.msg.records | dicts_to_table }}"
+
+- name: Log of cluster_health
+  include_tasks: tasks/add_log.yml
+  vars: 
+    log: 
+      cluster show: "{{ cluster_health_log }}"
+
+- name: Add failure if eligibility or health is not true 
+  include_tasks: tasks/add_failure.yml
+  vars: 
+    failure: 
+      issue: "Health and Eligibility must be `true` for all nodes"
+      details: "{{ cluster_health_log }}"
+  when: cluster_health | selectattr('eligibility','false') | list | length > 0 or 
+        cluster_health | selectattr('health','false') | length > 0
+        

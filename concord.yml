@@ -1,0 +1,662 @@
+---
+configuration:
+  runtime: "concord-v2"
+  dependencies:
+    - "mvn://com.walmartlabs.concord.plugins.basic:concord-tasks:latest"
+    - "mvn://com.walmartlabs.concord.plugins.basic:ansible-tasks:latest"
+  arguments: 
+    docker_image: ghcr.io/netapp-automation-examples/concord-ansible-netapp
+    ansible_config: ansible/ansible-concord.cfg
+    ansible_inventory: ansible/inventory
+    cluster_choices: ['cluster1','cluster2','clab1']
+    ontap_package_versions: 
+      - 9.10.1P15
+      - 9.10.1P16
+      - 9.11.1P1
+      - 9.11.1P2
+      - 9.11.1P16
+      - Yellowdog__9.12.1
+      - 9.12.1P7
+      - 9.13.1P13
+      - Lighthouse__9.13.1
+      - Clawhammer__9.14.1
+      - 9.14.1P11
+      - Clawhammer__9.14.1P2
+      - Mightysquirrel__9.15.1
+    ontap_creds: ${crypto.exportCredentials('Default', 'OntapCreds', null)}
+    temp_ontap_creds: ${crypto.exportCredentials('Default', 'OntapCreds', null)}
+    default_slack_text: ""
+    default_slack_channel_ids: ["@${initiator.username}", "C06N2U9QM8F"]
+    default_slack_emoji: ":concord:"
+    health_checks_failed: false
+    pre_upgrade_failed: false
+    takeover_giveback_failed: false
+    ping_test_failed: false
+    health_checks_retry: 5
+    skip_ping_test: false
+    ping_tests_retry: 5
+    pre_upgrade_retry: 5
+    takeover_giveback_retry: 5
+    #Set to true for mock the ansible playbooks that actually make changes
+    mock: false
+    # we'll start with 1 and do some calculation based on inputs that will increment the value potentially
+    metrics_workflow_impact: 1
+    # This is the value we assign to a single data lif for ping tests
+    metrics_workflow_impact_lifs_increment: 0.008
+    metrics_workflow_error: ""
+  out:
+    - metrics_workflow_impact
+    - metrics_workflow_impact_audit
+# add out vars section 
+
+publicFlows:
+  - mock_run
+  - upgrade
+  - validate_inventory
+  - ping_test_only
+  - health_checks_only
+
+forms:
+  review_form: 
+    - reviewed: {label: "Logs have been reviewed? Note that process will end if you do not confirm this.", type: "boolean"}
+    - end_process: {label: "End proccess now?", type: "boolean"}
+  
+  review_ping_tests_form: 
+    - reviewed: {label: "Ping test results have been reviewed? Note that process will end if you do not confirm this.", type: "boolean"}
+    - end_process: {label: "End proccess now?", type: "boolean"}
+  
+  review_takeover_giveback_form:
+    - reviewed: {label: "Takeover/giveback logs have been reviewed? Note that process will end if you do not confirm this.", type: "boolean"}
+    - override_vetoes: {label: "Pass in '-override-vetoes true' to the next run of the takeover/giveback playbook?", type: "boolean"}
+    - end_process: {label: "End proccess now?", type: "boolean"}
+  
+  status_check_form: 
+    - clusters:  { label: "Cluster(s)", type: "string+", readonly: false, allow: "${cluster_choices}", search: true}
+    - image_url: { label: "ONTAP Image URL", type: "string?" }
+    - package_version: { label: "Target ONTAP Package version",  type: "string", allow: "${ontap_package_versions}"}
+
+  validate_form:
+    - clusters: { 
+        label: "Cluster(s)", type: "string+", allow: "${cluster_choices}", search: true, 
+        placeholder: "Inventory group name(s) and/or short cluster name(s) here" 
+      }
+
+  mock_form:
+    - flow_to_mock: { 
+        label: "Flow to call in mock mode, meaning playbooks that take actions will be skipped.", type: "string", readonly: false, 
+        allow: ["ping_test_only", "upgrade"], 
+      }
+    
+flows:
+  mock_run: 
+    - set: 
+        mock: true
+    - form: mock_form
+    - log: "Mock run beginning for ${mock_form.flow_to_mock}, skipping playbooks that make changes."
+    - call: ${mock_form.flow_to_mock}
+      out: 
+        - metrics_workflow_impact
+        - metrics_workflow_impact_audit
+    - log: "Mock run complete for ${mock_form.flow_to_mock}"
+
+  ping_test_only: 
+    - form: validate_form
+    - log: "Run LIF ping test only for ${validate_form.clusters}"
+
+    - set: 
+        lifs_to_test: []
+        lifs_count: 0
+        clusters_list: ${validate_form.clusters}
+        clusters_count: ${clusters_list.size()}
+        metrics_workflow_impact: ${metrics_workflow_impact * clusters_count}
+        metrics_workflow_impact_audit: 
+          inventory: ${clusters_list}
+          inventory_count: ${clusters_count}
+    
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/get_lifs_and_ha_pairs.yml
+        extraVars:
+          clusters: ${validate_form.clusters} 
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+          target_ontap_version: 9.14.1P12 # hardcoding because we don't care about this, just need the lifs 
+        outVars:
+          - lifs_to_test
+      out: get_lifs_and_ha_pairs
+
+    - set: 
+        lifs_to_test: ${get_lifs_and_ha_pairs.lifs_to_test}
+        ansible_lifs_to_process: ${lifs_to_test}
+
+    - script: scripts/count_lifs_and_simplify_list.js
+      error:
+        - log: "Error occured with count_lifs_and_simplify_list.js: ${lastError.cause}"   
+        - set: 
+            metrics_workflow_error: "Error occured with count_lifs_and_simplify_list.js: ${lastError.cause}"
+
+    - set: 
+        # Increment the metrics_workflow_impact slightly for every lif 
+        metrics_workflow_impact: ${metrics_workflow_impact + (lifs_count*metrics_workflow_impact_lifs_increment)}
+        metrics_workflow_impact_audit: 
+          inventory: ${clusters_list}
+          inventory_count: ${clusters_count}
+          lifs_count: ${lifs_count}
+          error: ${metrics_workflow_error}
+
+    - if: ${mock == false} 
+      then:
+        - call: ping_test_playbook
+          in:
+            mock: ${mock}
+            ontap_clusters: ${validate_form.clusters}
+            lifs_to_test: ${lifs_to_test}
+          out: ping_test_results
+      else: 
+        - log: "Mock run, skipping actual ping test playbook. Would have run against ${lifs_count} data LIFs"
+    - log: Finished with ping test only run  
+
+  health_checks_only: 
+    - form: validate_form
+    - set: 
+        clusters: ${validate_form.clusters}
+    - log: "Running health checks only for ${clusters}"
+    - script: js
+      body: |
+        var clusterStatusMap = {};
+        for (var i = 0; i < clusters.length; i++) {
+          clusterStatusMap[clusters[i]] = "not_started";
+        }
+        execution.variables().set('cluster_status_map', clusterStatusMap);
+
+    - call: health_checks 
+      in: 
+        health_checks_clusters: ${clusters}
+        post_upgrade_check: false
+        upgrade_status: ${cluster_status_map}
+    - log: Finished with health checks only run  
+
+  validate_inventory: 
+    - form: validate_form
+    - log: "${ontap_creds.username}"
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/validate_inventory.yml
+        extraVars:
+          clusters: ${validate_form.clusters} 
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+
+  upgrade:  
+    # This first step is to set the needed input and check where in the process the target clusters are at
+    - form: status_check_form
+    
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/ontap_upgrade_status_check.yml
+        extraVars:
+          clusters: ${status_check_form.clusters} 
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+          ontap_package_version: ${status_check_form.package_version}
+          ontap_package_url: ${status_check_form.image_url}
+        outVars:
+          - upgrade_status
+      out: get_upgrade_status
+    
+    - log: ${get_upgrade_status}
+
+    # If this is not a mock run, the next step is to do pre-upgrade health checks
+    - if: ${mock == false} 
+      then: 
+        - call: health_checks 
+          in: 
+            health_checks_clusters: ${status_check_form.clusters}
+            upgrade_status: ${get_upgrade_status.upgrade_status}
+        - log: "Completed pre-upgrade health checks"
+        
+        # confirm what clusters should proceed with the upgrade
+        - form: confirm_upgrade_form
+          fields:
+            - clusters:  { 
+                label: "Cluster(s) that passed health checks", type: "string+", readonly: false, 
+                allow: "${status_check_form.clusters}", value: "${status_check_form.clusters}"
+              }
+
+      # If it is a mock run, we need to set the confirm_upgrade_form.clusters variable 
+      else: 
+        - log: "Mock run, skipping pre-upgrade health checks and confirmation form. Would have run against ${status_check_form.clusters}"
+        - set: 
+            confirm_upgrade_form: 
+              clusters: ${status_check_form.clusters}
+
+    # Next we need to set some key variables and grab data LIFs + non-upgraded HA Pairs 
+    - set:
+        upgrade_clusters: ${confirm_upgrade_form.clusters}
+        upgrade_image_url: ${status_check_form.image_url}
+        upgrade_package_version: ${status_check_form.package_version}
+
+    # This playbook is read only and we need the outvars so we do not need to check for mock
+    - log: "Get LIFs for ping test and HA Pairs that haven't been upgraded yet"
+
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/get_lifs_and_ha_pairs.yml
+        extraVars:
+          clusters: ${upgrade_clusters} 
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+          target_ontap_version: ${upgrade_package_version}
+        outVars:
+          - lifs_to_test
+          - ha_pairs_to_upgrade
+      out: get_lifs_and_ha_pairs 
+
+    - set: 
+        lifs_to_test: ${get_lifs_and_ha_pairs.lifs_to_test}
+        ansible_lifs_to_process: ${lifs_to_test}
+        ha_pairs_to_upgrade: ${get_lifs_and_ha_pairs.ha_pairs_to_upgrade}
+        ha_pairs: ${ha_pairs_to_upgrade}
+
+    # Get the data in the format we want 
+    - log: "ha_pairs_to_upgrade = ${ha_pairs_to_upgrade}"
+    - script: scripts/sequential_nodes_list.js
+      error:
+        - log: "Error occured with sequential_node_list.js: ${lastError.cause}"   
+    - log: "sequential_nodes_list: ${sequential_nodes_list}"
+
+    # Simplify lifs list for metrics audit
+    - script: scripts/count_lifs_and_simplify_list.js
+      error:
+        - log: "Error occured with count_lifs_and_simplify_list.js: ${lastError.cause}"   
+        - set: 
+            metrics_workflow_error: "Error occured with count_lifs_and_simplify_list.js: ${lastError.cause}"
+
+    # If there are no nodes to upgrade, skip the takeover/giveback part and go to the post-upgrade tasks
+    - if: ${sequential_nodes_list == []}
+      then: 
+        - log: "All nodes are already at the new version, nothing to takeover/giveback"
+        # Since the meat of the process is gone, we should leave the default multiplier for metrics_workflow_impact
+        - set: 
+            metrics_workflow_impact_audit: 
+              inventory: ${upgrade_clusters}
+              inventory_count: ${upgrade_clusters.size()}
+              ha_pairs_to_upgrade: ${ha_pairs_to_upgrade}
+              ha_pairs_to_upgrade_count: ${sequential_nodes_list.size()}
+              metrics_workflow_impact_nodes: 0
+              lifs_count: ${lifs_count}
+              error: "No nodes to upgrade. ${metrics_workflow_error}"
+
+      # If there ARE nodes to upgrade..
+      else: 
+
+          # Manual effort for ONTAP Upgrade ConcordMetric is estimated for a two node cluster, therefore
+          # Workflow Impact = 
+          #    (metrics_workflow_impact * (sequential_nodes_list - (2*upgrade_clusters))) 
+          #      + 
+          #   (lifs_count * ((metrics_workflow_impact_lifs_increment/50)*sequential_nodes_list))
+          # The lifs increment isn't going to be super precise in this formula, but it's close enough for our purpose
+        - set: 
+            metrics_workflow_impact_nodes: ${metrics_workflow_impact * (sequential_nodes_list.size() - (2 * upgrade_clusters.size()))}
+        - set:
+            metrics_workflow_impact: ${metrics_workflow_impact_nodes + (lifs_count * ((metrics_workflow_impact_lifs_increment/50)*sequential_nodes_list.size()))}
+
+        - if: ${metrics_workflow_impact < 0}
+          then: 
+            - set: 
+                metrics_workflow_impact: 1
+                metrics_workflow_error: "metrics_workflow_impact was a negative number, setting to 1. ${metrics_workflow_error}"
+            - log: "metrics_workflow_impact was a negative number, setting to 1"
+        
+        - set: 
+            metrics_workflow_impact_audit: 
+              inventory: ${upgrade_clusters}
+              inventory_count: ${upgrade_clusters.size()}
+              ha_pairs_to_upgrade: ${ha_pairs_to_upgrade}
+              ha_pairs_to_upgrade_count: ${sequential_nodes_list.size()}
+              metrics_workflow_impact_nodes: ${metrics_workflow_impact_nodes}
+              lifs_count: ${lifs_count}
+              error: ${metrics_workflow_error}
+
+        # let's check first if we're mocking the run before doing pre-upgrade tasks 
+        - if: ${mock == false}
+          then: 
+            - log: "Run the pre-upgrade tasks"
+            - call: pre_upgrade_playbook
+              in: 
+                ontap_clusters: ${upgrade_clusters}
+                ontap_package_version: ${upgrade_package_version}
+                ontap_package_url: ${upgrade_image_url}
+                upgrade_status: ${get_upgrade_status.upgrade_status}
+              out: pre_upgrade_results
+              retry:
+                in: 
+                  pre_upgrade_failed: true
+                times: ${pre_upgrade_retry}
+
+            - log: "Run baseline ping test"
+            - call: ping_test_playbook
+              in:
+                mock: ${mock}
+                ontap_clusters: ${upgrade_clusters}
+                lifs_to_test: ${lifs_to_test}
+              out: ping_test_results
+
+            - set: 
+                ping_test_baseline: ${ping_test_results.lifs_ping_test_results}
+            - log: ping_test_baseline = ${ping_test_baseline}
+
+            - log: Run the takeover_giveback on each ha pair sequentially 
+
+          else: 
+            - log: |
+                Mock run, skipping pre-upgrade playbook and baseline ping test. Would have run against ${upgrade_clusters} 
+                with package version ${upgrade_package_version} and URL ${upgrade_image_url}
+            - set: 
+                ping_test_baseline: "Mock"
+    
+        # If we make it here, there are nodes to upgrade. We'll pass mock to the flow and let the flow handle skipping the playbooks
+        - call: upgrade_node
+          in: 
+            nodes_list: ${item}
+            lifs_to_test: ${lifs_to_test}
+            ping_test_baseline: ${ping_test_baseline}
+            target_ontap_version: ${upgrade_package_version}
+            mock: ${mock}
+          loop: 
+            items: ${sequential_nodes_list}
+
+    # the takeover/giveback loop is done or was skipped. If this is a mock run, we end here
+    - if: ${mock == true}
+      then: 
+        - log: "Mock run, skipping post-upgrade playbook and health checks. Mock run is complete."
+        - exit
+    
+    # We have made it to the post-upgrade steps, if not a mock run
+    - log: Run the post-upgrade tasks
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/ontap_upgrade_post_upgrade.yml
+        extraVars:
+          clusters: ${upgrade_clusters} 
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+      out: post_upgrade
+    - call: health_checks 
+      in: 
+        health_checks_clusters: ${upgrade_clusters} 
+        post_upgrade_check: True
+        upgrade_status: ${get_upgrade_status.upgrade_status}
+    - log: "Completed post-upgrade health checks"
+
+  ##### This is the helper flow section #####
+  upgrade_node: 
+    - log: "nodes = ${nodes_list}"
+    - log: "mock = ${mock}"
+    - if: ${mock == true}
+      then: 
+        - log: "Mock run, skipping actual takeover/giveback and ping test playbooks. Would have run against ${nodes_list}"
+      else: 
+        - try: 
+            - call: takeover_giveback_playbook
+              in: 
+                nodes: ${nodes_list}
+                clusters: ${upgrade_clusters} 
+                ontap_creds: ${ontap_creds}
+                temp_ontap_creds: ${temp_ontap_creds}
+                target_ontap_version: ${target_ontap_version}
+              retry:
+                in: 
+                  takeover_giveback_failed: true
+                times: ${takeover_giveback_retry}
+              error: 
+                - call: send_slack
+                  in: 
+                    slack_text: "Takeover/giveback playbook has failed ${takeover_giveback_retry} times"
+                - throw: "Takeover/giveback playbook has failed ${takeover_giveback_retry} times"
+                - exit        
+            - if: ${skip_ping_test == false}
+              then:
+                - call: ping_tests
+                  in: 
+                    ping_test_clusters: ${upgrade_clusters}  
+                    ping_test_lifs: ${lifs_to_test}
+                    ping_test_baseline: ${ping_test_baseline}
+          error: 
+            - throw: "Something happened ${lastError}"
+
+  health_checks:
+    - call: health_checks_playbook
+      in: 
+        ontap_clusters: ${health_checks_clusters}
+        post_upgrade_check: ${orDefault('post_upgrade_check', 'False')}
+        upgrade_status: ${upgrade_status}
+      retry:
+        in: 
+          health_checks_failed: true
+        times: ${health_checks_retry}
+      out: health_checks_results
+      error: 
+        - call: send_slack
+          in: 
+            slack_text: "Health Check playbook has failed ${health_checks_retry} times"
+        - throw: "Health Check playbook has failed ${health_checks_retry} times"
+        - exit
+      
+    - log: "Health checks playbook ran succesfully, review before proceeding"
+    - call: review 
+    
+  ping_tests:
+    - call: ping_test_playbook
+      in:
+        mock: ${mock}
+        ontap_clusters: ${ping_test_clusters}
+        lifs_to_test: ${ping_test_lifs}
+        lifs_baseline_ping_test: ${ping_test_baseline}
+      retry:
+        in: 
+          ping_test_failed: true
+        times: ${ping_tests_retry}
+      out: ping_test_results
+      error: 
+        - call: send_slack
+          in: 
+            slack_text: "Ping Test playbook has failed ${ping_tests_retry} times"
+        - throw: "Health Check playbook has failed ${ping_tests_retry} times"
+        - exit
+
+    # - log: ${ping_test_results}
+    - log: "Ping tests matched the baseline, no review neccessary"
+
+  takeover_giveback_playbook:
+    - set: 
+        override_vetoes: false
+    - log: "takeover_giveback_failed value = ${takeover_giveback_failed}"
+    - if: ${takeover_giveback_failed == true}
+      then:
+        - call: review_takeover_giveback 
+        - if: ${review_takeover_giveback_form.override_vetoes == true}
+          then: 
+            - set: 
+                override_vetoes: true
+    - log: override_vetoes = ${override_vetoes}
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/ontap_upgrade_takeover_giveback.yml
+        extraVars:
+          nodes: ${nodes_list}
+          clusters: ${upgrade_clusters} 
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+          target_ontap_version: ${target_ontap_version}
+          override_vetoes: ${override_vetoes}
+      out: node_upgrade_results
+
+
+  review_takeover_giveback:
+    - call: send_slack
+      in: 
+        slack_emoji: ":pr_normal_review:"
+        slack_text: "Takeover/Giveback has failed during ONTAP Upgrade concord process and needs reviewed"
+    - form: review_takeover_giveback_form
+      saveSubmittedBy: true
+    - log: "Logs/progress reviewed by ${review_takeover_giveback_form.submittedBy.displayName}"
+    - if: ${review_takeover_giveback_form.end_process == true or review_takeover_giveback_form.reviewed == false}
+      then:
+        - log: "Process ended by ${review_takeover_giveback_form.submittedBy.displayName}: ${review_takeover_giveback_form}"
+        - call: send_slack
+          in: 
+            slack_emoji: ":stop:"
+            slack_text: "ONTAP Upgrade concord process ended after takeover/giveback failure by ${review_takeover_giveback_form.submittedBy.displayName}"
+        - exit
+  
+  review_ping_test: 
+    - log: Review diff with baseline ping test before proceeding"
+    - call: send_slack
+      in: 
+        slack_emoji: ":pr_normal_review:"
+        slack_text: "ONTAP Upgrade concord process needs ping test diff reviewed before it can proceed"
+    - form: review_ping_tests_form
+      saveSubmittedBy: true
+    - log: "Logs/progress reviewed by ${review_ping_tests_form.submittedBy.displayName}"
+    - if: ${review_ping_tests_form.end_process == true or review_ping_tests_form.reviewed == false}
+      then:
+        - log: "Process ended by ${review_ping_tests_form.submittedBy.displayName}: ${review_ping_tests_form}"
+        - call: send_slack
+          in: 
+            slack_text: "ONTAP Upgrade concord process ended after ping test review by ${review_ping_tests_form.submittedBy.displayName}"
+        - exit
+    
+  review:
+    - call: send_slack
+      in: 
+        slack_emoji: ":pr_normal_review:"
+        slack_text: "ONTAP Upgrade concord process needs reviewed before it can proceed"
+    - form: review_form
+      saveSubmittedBy: true
+    - log: "Logs/progress reviewed by ${review_form.submittedBy.displayName}"
+    - if: ${review_form.end_process == true or review_form.reviewed == false}
+      then:
+        - log: "Process ended by ${review_form.submittedBy.displayName}: ${review_form}"
+        - call: send_slack
+          in: 
+            slack_emoji: ":stop:"
+            slack_text: "ONTAP Upgrade concord process ended by ${review_form.submittedBy.displayName}"
+        - exit
+  
+  pre_upgrade_playbook: 
+    - log: "pre_upgrade_failed value = ${pre_upgrade_failed}"
+    - if: ${pre_upgrade_failed == true}
+      then:
+        - call: review
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/ontap_upgrade_pre_upgrade.yml
+        extraVars:
+          clusters: ${ontap_clusters} 
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+          ontap_package_version: ${ontap_package_version}
+          ontap_package_url: ${ontap_package_url}
+          upgrade_status: ${upgrade_status}
+      out: pre_upgrade_out
+    - set:
+        pre_upgrade_results: ${pre_upgrade_out}
+
+
+  health_checks_playbook:
+    - log: "upgrade_status = ${upgrade_status}"
+    - log: "health_checks_failed value = ${health_checks_failed}"
+    - if: ${health_checks_failed == true}
+      then:
+        - call: review
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/ontap_upgrade_health_checks.yml
+        extraVars:
+          clusters: ${ontap_clusters} 
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+          post_upgrade_check: ${post_upgrade_check}
+          upgrade_status: ${upgrade_status}
+          #simulate_failure: ${simulate_failure}
+        outVars:
+          - "summary_logs"
+          - "summary_failures"
+          - "summary_warnings"
+      out: health_checks
+    - set:
+        health_checks_results: ${health_checks}
+
+  ping_test_playbook: 
+    - log: "mock value = ${mock}"
+    - log: "ping_test_failed value = ${ping_test_failed}"
+    - if: ${ping_test_failed == true}
+      then:
+        - call: review_ping_test
+    - task: ansible
+      in:
+        dockerImage: ${docker_image}
+        configFile: ${ansible_config}
+        inventoryFile: ${ansible_inventory}
+        playbook: ansible/ping_test.yml
+        extraVars:
+          mock: ${mock}
+          clusters: ${ontap_clusters} 
+          lifs_to_test: ${lifs_to_test}
+          ontap_creds: ${ontap_creds}
+          temp_ontap_creds: ${temp_ontap_creds}
+          lifs_baseline_ping_test: ${orDefault('lifs_baseline_ping_test', '')}
+        outVars:
+          - lifs_that_failed
+          - lifs_ping_test_results
+          - lifs_diff_ping_test_results
+      out: ping_tests
+    - set:
+        ping_test_results: ${ping_tests}
+
+  send_slack: 
+    - set: 
+        slack_channels: ${orDefault('slack_channel_ids', default_slack_channel_ids)}
+    - log: "Send slack message to ${slack_channels}"
+    # - task: slack
+    #   in:
+    #     channelId: "${item}"
+    #     #username: "anyCustomString"
+    #     iconEmoji: ${orDefault('slack_emoji', default_slack_emoji)}
+    #     text: "https://concord.prod.walmart.com/#/process/${orDefault('parentInstanceId', txId)} \n 
+    #           ${orDefault('slack_text', default_slack_text)}"
+    #     ignoreErrors: false
+    #   loop: 
+    #     items: ${slack_channels}
+
+  onFailure:
+    - call: send_slack
+      in:
+        slack_emoji: ":err:"
+        slack_text: "The ONTAP Upgrade Concord worfklow has failed"
+

@@ -1,0 +1,256 @@
+---
+- name: Takeover/giveback of a given node for each cluster to upgrade ONTAP
+  hosts: "{{ clusters | default('localhost') }}"
+  gather_facts: no
+  connection: 'local'
+  collections:
+    - netapp.ontap
+  vars:
+    # Set this var to stop playbook after getting the failover status of the HA pair
+    #failover_check_only: True
+    failover_status_retries: 40
+    failover_status_delay: 30
+    pause_in_seconds_between_takeover_giveback: 120
+    takeover_option: "normal"
+    target_ontap_version: ""
+    override_vetoes: "false"
+    nodes: []
+    node: "{{ nodes[inventory_hostname] if inventory_hostname in nodes else '' }}"
+    node_query:
+      fields: "uptime,state,ha,version"
+    lif_query: 
+      fields: "location,state"
+
+  module_defaults:    
+    group/netapp.ontap.netapp_ontap:      
+      hostname: "{{ ontap_hostname }}"
+      username: "{{ ontap_username }}"
+      password: "{{ ontap_password }}"
+      https: "{{ https }}"
+      validate_certs: "{{ validate_certs }}"
+
+  tasks:
+  - name: Log of nodes
+    ansible.builtin.debug:
+      msg: "nodes = {{ nodes }} and node = {{ node }}"
+  
+  - name: End playbook for host if no node found
+    ansible.builtin.meta: end_host
+    when: node == ''
+
+  - name: Get node info (`netapp.ontap.na_ontap_rest_info`)
+    include_tasks: tasks/rest_info.yml
+    vars:
+      gather_subset:
+      - cluster/nodes
+      parameters:
+        name: "{{ node }}"
+        fields: "{{ node_query.fields }}"
+
+  - name: Set node info fact
+    ansible.builtin.set_fact:
+      node_info: "{{ ontap_rest_info['cluster/nodes']['records'] | first }}"
+  
+  - name: Log of {{ target_ontap_version }} vs current ontap version
+    ansible.builtin.debug: 
+      msg: |
+        Current ONTAP Version: {{ node_info.version.full }}
+        Target ONTAP Version: NetApp Release {{ target_ontap_version }}
+
+  - name: "End playbook for host if node is already at {{ target_ontap_version }}"
+    ansible.builtin.meta: end_host
+    when: target_ontap_version == node_info.version | ontap_version
+
+  - name: Set node_state 
+    ansible.builtin.set_fact:
+      node_state: "{{ node_info.state }}"
+
+  - name: Get HA Partner info  (`netapp.ontap.na_ontap_restit`)
+    block: 
+    - netapp.ontap.na_ontap_restit:
+        api: cluster/nodes/{{ node_info.ha.partners.0.uuid }}
+        query:
+          fields: "{{ node_query.fields }}"
+      register: get_ha_partner
+
+    - name: Set node_ha_partner
+      ansible.builtin.set_fact:
+        ha_partner: "{{ get_ha_partner.response }}" 
+    rescue: 
+    - name: End playbook
+      ansible.builtin.fail: 
+        msg: "Ending playbook run as the HA partner info is required to determine stasis/failover/giveback status. See error above."
+
+  - name: Set in_takeover 
+    ansible.builtin.set_fact:
+      in_takeover: True
+    when: ha_partner.ha.takeover.state in ['in_progress','in_takeover']
+
+  - name: Set doing_giveback
+    ansible.builtin.set_fact:
+      doing_giveback: True
+    when: ha_partner.ha.giveback.state in ['in_progress']
+
+  - name: Set at_stasis
+    ansible.builtin.set_fact: 
+      at_stasis: True
+    when: node_state == 'up' and node_info.ha.takeover is defined
+          and ha_partner.ha.giveback.state in ['nothing_to_giveback', 'not_attempted']
+          and ha_partner.ha.takeover.state == 'not_attempted'
+  
+  - name: Set version_mismatch and takeover_option = allow-version-mismatch
+    ansible.builtin.set_fact: 
+      version_mismatch: True
+      takeover_option: allow-version-mismatch
+    when: node_info.version.major != ha_partner.version.major 
+          or node_info.version.generation != ha_partner.version.generation
+
+  - name: Log of current uptime, os version, and failover state 
+    ansible.builtin.debug:
+      msg: |
+        {{ node_info.name }} 
+        uptime = {{ node_info.uptime if node_info.uptime is defined else '0' }} 
+        version = at {{ node_info.version.full }} 
+        state = {{ node_info.state }} 
+        ha = {{ node_info.ha }}
+        partner = {{ ha_partner.name }}
+        partner version = {{ ha_partner.version.full }}
+        partner state = {{ ha_partner.state }}
+        partner takeover = {{ ha_partner.ha.takeover }}
+        partner giveback = {{ ha_partner.ha.giveback }}
+        version_mismatch = {{ version_mismatch if version_mismatch is defined }}
+        takeover_option = {{ takeover_option }}
+        version_mismatch = {{ version_mismatch if version_mismatch is defined }}
+        at_stasis = {{ at_stasis if at_stasis is defined }}
+        in_takeover = {{ in_takeover if in_takeover is defined }}
+        doing_giveback = {{ doing_giveback if doing_giveback is defined }}
+
+  - name: End play if failover_check_only is defined
+    meta: end_play
+    when: failover_check_only is defined
+
+  - name: Get node lifs 
+    include_tasks: tasks/get_node_lifs.yml
+
+  - name: Migrate all lifs and initiate takeover
+    block: 
+    - name: net int migrate-all -node <node> 
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'network/interface/migrate-all'
+        body: 
+          node: "{{ node }}"
+        verb: "POST"
+      register: net_int_migrate_all
+
+    - name: Get node lifs post migrate command 
+      include_tasks: tasks/get_node_lifs.yml
+    
+    - name: >
+        storage failover takeover -ofnode <node> -option {{ takeover_option }} -override-vetoes {{ override_vetoes }}
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'storage/failover/takeover'
+        body: 
+          ofnode: "{{ node }}"
+          option: "{{ takeover_option }}"
+          override-vetoes: "{{ override_vetoes }}"
+        verb: "POST"
+      register: takeover
+    when: (at_stasis is defined or version_mismatch is defined) and in_takeover is not defined
+
+  - name: Check takeover status until we get "waiting for giveback"
+    block: 
+    - name: /cluster/nodes/{{ node_info.uuid }}?fields=state,ha until state is waiting_for_giveback
+      netapp.ontap.na_ontap_restit:
+        api: cluster/nodes/{{ node_info.uuid }}
+        query:
+          fields: "state,ha"
+      register: takeover_status
+      until: takeover_status.response.state is defined 
+              and takeover_status.response.state == 'waiting_for_giveback'
+      retries: "{{ failover_status_retries }}"
+      delay: "{{ failover_status_delay }}"     
+        
+    when: takeover is defined or in_takeover is defined 
+ 
+  - name: Do the giveback
+    block: 
+    # only run the delay if it wasn't already in waiting_for_giveback state prior to this playbook run
+    - name: Give it {{ pause_in_seconds_between_takeover_giveback }} seconds before we try giveback
+      ansible.builtin.pause:
+        seconds: "{{ pause_in_seconds_between_takeover_giveback }}"
+      when: node_state != 'waiting_for_giveback'
+
+    - name: storage failover giveback -ofnode <node> -override-vetoes {{ override_vetoes }}
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'storage/failover/giveback'
+        body: 
+          ofnode: "{{ node }}"
+          override-vetoes: "{{ override_vetoes }}"
+        verb: "POST"
+      register: giveback
+    
+    - name: /cluster/nodes/{{ node_info.uuid }}?fields=state,ha.giveback.state until  until we get "up"
+      netapp.ontap.na_ontap_restit:
+        api: cluster/nodes/{{ node_info.uuid }}
+        query:
+          fields: "state,ha.giveback.state"
+      register: giveback_status
+      until: giveback_status.response.state == 'up' 
+              and giveback_status.response.ha.giveback.state is defined 
+      retries: "{{ failover_status_retries }}"
+      delay: "{{ failover_status_delay }}" 
+
+    - name: /cluster/nodes/{{ node_info.uuid }}?fields=ha until we get "nothing_to_giveback"
+      netapp.ontap.na_ontap_restit:
+        api: cluster/nodes/{{ ha_partner.uuid }}
+        query:
+          fields: "ha"
+      register: partner_giveback_status
+      until: partner_giveback_status.response.ha.giveback.state == 'nothing_to_giveback'
+      retries: "{{ failover_status_retries }}"
+      delay: "{{ failover_status_delay }}" 
+    when: node_state == 'waiting_for_giveback' or takeover_status is defined
+
+  - name: Validate ports and revert LIFs (`net port show -node <node>`)
+    block: 
+    - name: net port show -node <node>
+      netapp.ontap.na_ontap_rest_cli: 
+        command: 'network/port'
+        params: 
+          fields: "port,ipspace,broadcast-domain,link,health-status"
+          node: "{{ node }}"
+        verb: "GET"
+      register: net_port_show
+
+    - name: Log of net_port_show
+      ansible.builtin.debug: 
+        var: net_port_show.msg.records | dicts_to_table 
+
+    - name: net int revert * 
+      block: 
+      - netapp.ontap.na_ontap_rest_cli: 
+          command: 'network/interface/revert'
+          params: 
+            lif: "*"
+          verb: "PATCH"
+        register: net_int_revert
+      rescue: 
+      - name: "`net int revert *` failed. Pause for 20 seconds before proceeding."
+        ansible.builtin.pause: 
+          seconds: 20
+
+    - name: Get node lifs post revert command
+      include_tasks: tasks/get_node_lifs.yml
+
+    - name: Check to see if any of the node_lifs still show not home 
+      netapp.ontap.na_ontap_restit:
+        api: network/ip/interfaces
+        query:
+          name: "{{ node_lifs | map(attribute='name') | join('|') }}"
+          location.is_home: "false"
+      register: check_lifs_not_home
+    
+    - name: Log of check_lifs_not_home
+      ansible.builtin.debug: 
+        var: check_lifs_not_home
+    tags: ["revert_lifs"]

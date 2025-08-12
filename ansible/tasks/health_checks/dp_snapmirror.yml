@@ -1,0 +1,13 @@
+- name: Find any DP SnampMirrors (`snapmirror list-destinations -type DP`)
+  netapp.ontap.na_ontap_rest_cli: 
+    command: 'snapmirror/list-destinations'
+    params: 
+      type: "DP"
+    verb: "GET"
+  register: verify_snapmirror_dp_destinations
+
+- name: Log of verify_snapmirror_dp_destinations
+  include_tasks: tasks/add_log.yml
+  vars: 
+    log: 
+      snapmirror list-destinations -type DP: "{{ verify_snapmirror_dp_destinations.msg.records | dicts_to_table }}"

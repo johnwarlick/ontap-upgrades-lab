@@ -1,0 +1,45 @@
+- name: Get broken/maintenance disks
+        (netapp.ontap.na_ontap_rest_info, storage/disks, container_type=broken|maintenance)
+  include_tasks: tasks/rest_info.yml
+  vars: 
+    gather_subset: ['storage/disks']  
+    parameters:
+      container_type: "broken|maintenance"
+
+- name: Set broken_disks
+  ansible.builtin.set_fact: 
+    broken_disks: "{{ ontap_rest_info['storage/disks']['records'] }}"
+
+- name: Log of broken_disks
+  include_tasks: tasks/add_log.yml
+  vars: 
+    log: 
+      netapp.ontap.na_ontap_rest_info, storage/disks, container_type=broken|maintenance: "{{ broken_disks | dicts_to_table }}"
+
+- name: Get pending/reconstructing disks 
+        (netapp.ontap.na_ontap_rest_info, storage/disks, state=pending|reconstruction)
+  include_tasks: tasks/rest_info.yml
+  vars: 
+    gather_subset: ['storage/disks']  
+    parameters:
+      state: "pending|reconstruction"
+
+- name: Set pending_disks
+  ansible.builtin.set_fact: 
+    pending_disks: "{{ ontap_rest_info['storage/disks']['records'] }}"
+
+- name: Log of pending_disks
+  include_tasks: tasks/add_log.yml
+  vars: 
+    log: 
+      netapp.ontap.na_ontap_rest_info, storage/disks, state=pending|reconstruction: "{{ pending_disks | dicts_to_table }}"
+
+- name: Fail playbook if any non-healthy disks
+  include_tasks: tasks/add_failure.yml
+  vars: 
+    failure: 
+      issue: "There are broken disks and/or disks in a pending / reconstructing state."
+      details: 
+        broken_disks: "{{ broken_disks | dicts_to_table }}"
+        pending_disks: "{{ pending_disks | dicts_to_table }}"
+  when: broken_disks | length > 0 or pending_disks | length > 0 

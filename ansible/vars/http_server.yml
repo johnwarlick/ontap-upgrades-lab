@@ -1,0 +1,3 @@
+http_server_port: 80
+http_server_host: http_server.domain.here
+http_server_url: "http://{{ http_server_host }}:{{ http_server_port }}"

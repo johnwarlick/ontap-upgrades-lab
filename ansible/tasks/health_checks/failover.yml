@@ -1,0 +1,57 @@
+- name: Verify failover status (`storage failover show`)  
+  netapp.ontap.na_ontap_rest_cli: 
+    command: 'storage/failover'
+    params: 
+      fields: "node,partner-name,enabled,possible,state-description"
+    verb: "GET"
+  register: get_failover_status
+
+- name: Set failover_status 
+  ansible.builtin.set_fact:
+    failover_status: "{{ get_failover_status.msg.records }}"
+
+- name: Log of verify_failover_status
+  include_tasks: tasks/add_log.yml
+  vars: 
+    log: 
+      storage failover show: "{{ failover_status | dicts_to_table }}"
+
+- name: Check for any nodes where failover isn't possible
+  ansible.builtin.set_fact: 
+    failover_not_possible: "{{ failover_status | selectattr('possible','false') | list }}"
+
+- name: Enable failover for any nodes where it's disabled on 4+ node clusters 
+  block: 
+
+  - name: Enable storage failover (`netapp.ontap.na_ontap_storage_failover`)
+    netapp.ontap.na_ontap_storage_failover:
+      state: present
+      node_name: "{{ item.node }}"
+    register: enable_failover
+    loop: "{{ failover_not_possible }}"
+
+  - name: Verify failover enabled across the board status 
+          (`storage failover show -enabled false`)  
+    netapp.ontap.na_ontap_rest_cli: 
+      command: 'storage/failover'
+      params: 
+        enabled: "false"
+      verb: "GET"
+    register: verify_failover_status
+
+  - name: Log of verify_failover_status
+    include_tasks: tasks/add_log.yml
+    vars: 
+      log: 
+        netapp.ontap.na_ontap_storage_failover: "{{ enable_failover.msg }}"
+        storage failover show -enabled false: "{{ verify_failover_status.msg.records | dicts_to_table }}"
+
+  - name: Fail playbook if failover is still not enabled
+    include_tasks: tasks/add_failure.yml  
+    vars: 
+      failure: 
+        issue: "Failover needs to be enabled on all nodes"
+        details: "{{ verify_failover_status.msg.records | dicts_to_table }}"
+    when: verify_failover_status.msg.num_records > 0 
+  
+  when: failover_not_possible | length > 0 and cluster_node_count | int > 2

@@ -1,0 +1,50 @@
+---
+- name: "Testing concord workflow handling - {{ clusters }}"
+  hosts: "{{ clusters | default('localhost') }}"
+  gather_facts: no
+  connection: 'local'
+  collections:
+    - netapp.ontap
+  module_defaults:
+    group/netapp.ontap.netapp_ontap:
+      hostname: "{{ ontap_hostname }}"
+      username: "{{ ontap_username }}"
+      password: "{{ ontap_password }}"
+      https: "{{ https }}"
+      validate_certs: "{{ validate_certs }}"
+  vars: 
+    summary_failures: []
+    summary_warnings: []
+    summary_logs: []
+    simulate_failure: false
+  tasks:
+  - name: Test API Call
+    include_tasks: tasks/rest_info.yml
+    vars: 
+      gather_subset: 
+        - cluster
+      parameters:
+        fields: ['*']    
+        
+  - name: Log
+    include_tasks: tasks/add_log.yml
+    vars: 
+      log: 
+        cluster: "{{ ontap_rest_info['cluster'] }}"
+
+  - block: 
+    - name: Add failure condition  
+      include_tasks: tasks/add_failure.yml
+      vars: 
+        failure: 
+          issue: "Do not go gentle into that good night"
+          records: "{{ ontap_rest_info['cluster'] }}"
+
+    - name: Fail playbook
+      ansible.builtin.fail: 
+        msg: "{{ summary_failures }}"
+
+    when: simulate_failure is true
+
+    
+

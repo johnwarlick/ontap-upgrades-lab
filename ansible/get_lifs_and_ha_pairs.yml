@@ -1,0 +1,80 @@
+---
+- name: >
+    Get '{{ lifs_query.services | join(',') }}' LIFs that are state={{ lifs_query.state }} 
+    and HA Pairs that have not been upgraded yet to '{{ target_ontap_version }}' 
+    from {{ clusters }}"
+  hosts: "{{ clusters | default('localhost') }}"
+  gather_facts: no
+  connection: 'local'
+  collections:
+    - netapp.ontap
+  module_defaults:
+    group/netapp.ontap.netapp_ontap:
+      hostname: "{{ ontap_hostname }}"
+      username: "{{ ontap_username }}"
+      password: "{{ ontap_password }}"
+      https: "{{ https }}"
+      validate_certs: "{{ validate_certs }}"
+  vars: 
+    lifs_to_test: []
+    # The basic role to services filter mapping is as follows: 
+    #   -role data = data-core
+    #   -role cluster = cluster-core
+    #   -role cluster-mgmt,node-mgmt = management-core
+    #   -role intercluster = intercluster-core
+    lifs_query:
+      services: ['data-core'] 
+      state: up
+      fields: "location.home_node.name,location.home_port.name,location.port.name,\
+                location.is_home,location.node.name,ip.address"
+    nodes_query:
+      fields: "uptime,state,ha,version"
+      version: "!NetApp Release {{ target_ontap_version }}:*"
+    ha_pairs_to_upgrade: [] 
+  tasks:
+  - name: Fail playbook if no `target_ontap_version` variable passed
+    ansible.builtin.fail: 
+      msg: "'target_ontap_version' is undefined, you must pass a valid target package version of ONTAP"
+    when: target_ontap_version is undefined 
+  - name: Get {{ lifs_query.services }} LIF(s) with a state of '{{ lifs_query.state }}' to ping tests
+    include_tasks: tasks/rest_info.yml
+    vars: 
+      gather_subset: 
+        - network/ip/interfaces
+      parameters:
+        fields: "{{ lifs_query.fields }}"
+        enabled: true
+        state: "{{ lifs_query.state }}"
+        services: "{{ lifs_query.services | join(',') }}"
+
+  - name: Set lifs_to_test fact
+    ansible.builtin.set_fact: 
+      lifs_to_test: "{{ ontap_rest_info['network/ip/interfaces']['records'] }}"
+
+  - name: Get nodes not at {{ target_ontap_version }} 
+    include_tasks: tasks/rest_info.yml
+    vars: 
+      gather_subset: 
+        - cluster/nodes
+      parameters:
+        fields: "{{ nodes_query.fields }}"
+        version.full: "{{ nodes_query.version }}"
+
+  - name: Set nodes fact
+    ansible.builtin.set_fact: 
+      nodes: "{{ ontap_rest_info['cluster/nodes']['records'] }}"
+
+  - name: Log of nodes not at {{ target_ontap_version }}
+    ansible.builtin.debug: 
+      msg: >
+        {% for node in nodes %}
+          {{ node.name }} - {{ node.version.full }}
+        {% endfor %}
+
+  - name: Set ha_pairs_to_upgrade fact
+    ansible.builtin.set_fact: 
+      ha_pairs_to_upgrade: "{{ nodes | ontap_ha_pairs }}"
+
+  - name: Log of ha_pairs_to_upgrade
+    ansible.builtin.debug: 
+      var: ha_pairs_to_upgrade

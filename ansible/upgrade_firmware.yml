@@ -1,0 +1,28 @@
+---
+- name: "Upgrading firmware ({{ ontap_firmware_packages }}) on {{ clusters }}"
+  hosts: "{{ clusters | default('localhost') }}"
+  gather_facts: no
+  connection: 'local'
+  collections:
+    - netapp.ontap
+  vars_files: 
+    - http_server.yml
+  vars:
+    # default to just qual_devices.zip
+    ontap_firmware_packages:
+      - qual_devices.zip
+  tasks:
+  - name: Check url
+    debug: 
+      var: http_server_url
+    run_once: true
+  - name: Push all files, will start update automtically once succesfully uploaded
+    netapp.ontap.na_ontap_firmware_upgrade:
+      state: present
+      package_url: "{{ http_server_url }}/{{ item }}"
+      hostname: "{{ ontap_hostname }}"
+      username: "{{ ontap_username }}"
+      password: "{{ ontap_password }}"
+      https: "{{ https }}"
+      validate_certs: "{{ validate_certs }}"
+    loop: "{{ ontap_firmware_packages }}"

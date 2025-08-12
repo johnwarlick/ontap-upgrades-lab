@@ -1,0 +1,11 @@
+- name: Get Snapshot copies (`vol snapshot show`)
+  netapp.ontap.na_ontap_rest_cli: 
+    command: 'volume/snapshot'
+    verb: "GET"
+  register: verify_snapshot_count
+
+- name: Log of verify_snapshot_count
+  include_tasks: tasks/add_log.yml
+  vars: 
+    log: 
+      record count for `vol snapshot show`: "{{ verify_snapshot_count.msg.num_records }}"
