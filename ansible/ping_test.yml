@@ -79,14 +79,6 @@
     ansible.builtin.meta: end_host 
     when: lifs_ping_test_results == lifs_baseline_ping_test_results
 
-  - name: Log of lifs_ping_test_results
-    ansible.builtin.debug: 
-      var: lifs_ping_test_results
-
-  - name: Log of lifs_baseline_ping_test_results
-    ansible.builtin.debug: 
-      var: lifs_baseline_ping_test_results
-
   - name: Log of checksums
     ansible.builtin.debug: 
       msg: |
