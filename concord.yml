@@ -3,7 +3,7 @@ configuration:
   runtime: "concord-v2"
   dependencies:
     - "mvn://com.walmartlabs.concord.plugins.basic:concord-tasks:latest"
-    - "mvn://com.walmartlabs.concord.plugins.basic:ansible-tasks:latest"
+    - "mvn://com.walmartlabs.concord.plugins.basic:ansible-tasks:2.20.0"
   arguments: 
     docker_image: ghcr.io/netapp-automation-examples/concord-ansible-netapp
     ansible_config: ansible/ansible-concord.cfg
