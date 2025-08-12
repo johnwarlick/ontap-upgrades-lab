@@ -157,10 +157,15 @@
         verb: "GET"
       register: node_image_new_package
 
+    - name: Fail playbook if we could not find the image
+      ansible.builtin.fail:
+        msg: "Could not find {{ target_ontap_version }} in `system node image show -node {{ node }}`"
+      when: node_image_new_package.msg.records | length == 0 
+
     - name: Set new_image_name
       ansible.builtin.set_fact: 
         new_image_name: "{{ (node_image_new_package.msg.records | first).image }}"
-
+      
     - name: system image modify -node {{ node }} -image {{ new_image_name }} -isdefault true
       netapp.ontap.na_ontap_rest_cli: 
         command: 'system/node/image'
