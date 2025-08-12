@@ -658,6 +658,7 @@ flows:
       in:
         action: kill
         instanceId: ${txId}
+        sync: true
 
 
   onFailure:
