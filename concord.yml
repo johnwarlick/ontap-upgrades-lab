@@ -429,7 +429,6 @@ flows:
                   in: 
                     slack_text: "Takeover/giveback playbook has failed ${takeover_giveback_retry} times"
                 - throw: "Takeover/giveback playbook has failed ${takeover_giveback_retry} times"
-                - exit        
             - if: ${skip_ping_test == false}
               then:
                 - call: ping_tests
@@ -456,7 +455,6 @@ flows:
           in: 
             slack_text: "Health Check playbook has failed ${health_checks_retry} times"
         - throw: "Health Check playbook has failed ${health_checks_retry} times"
-        - exit
       
     - log: "Health checks playbook ran succesfully, review before proceeding"
     - call: review 
@@ -478,7 +476,6 @@ flows:
           in: 
             slack_text: "Ping Test playbook has failed ${ping_tests_retry} times"
         - throw: "Health Check playbook has failed ${ping_tests_retry} times"
-        - exit
 
     # - log: ${ping_test_results}
     - log: "Ping tests matched the baseline, no review neccessary"
@@ -526,8 +523,8 @@ flows:
           in: 
             slack_emoji: ":stop:"
             slack_text: "ONTAP Upgrade concord process ended after takeover/giveback failure by ${review_takeover_giveback_form.submittedBy.displayName}"
-        - exit
-  
+        - call: cancel_process
+
   review_ping_test: 
     - log: Review diff with baseline ping test before proceeding"
     - call: send_slack
@@ -543,7 +540,7 @@ flows:
         - call: send_slack
           in: 
             slack_text: "ONTAP Upgrade concord process ended after ping test review by ${review_ping_tests_form.submittedBy.displayName}"
-        - exit
+        - call: cancel_process
     
   review:
     - call: send_slack
@@ -560,7 +557,8 @@ flows:
           in: 
             slack_emoji: ":stop:"
             slack_text: "ONTAP Upgrade concord process ended by ${review_form.submittedBy.displayName}"
-        - exit
+        - call: cancel_process
+
   
   pre_upgrade_playbook: 
     - log: "pre_upgrade_failed value = ${pre_upgrade_failed}"
@@ -654,9 +652,18 @@ flows:
     #   loop: 
     #     items: ${slack_channels}
 
+  cancel_process: 
+    # end process with CANCEL status 
+    - task: concord
+      in:
+        action: kill
+        instanceId: ${txId}
+
+
   onFailure:
     - call: send_slack
       in:
         slack_emoji: ":err:"
         slack_text: "The ONTAP Upgrade Concord worfklow has failed"
+
 
