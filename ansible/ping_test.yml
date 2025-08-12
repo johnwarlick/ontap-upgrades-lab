@@ -95,9 +95,9 @@
             diff_count: "{{ lifs_ping_test_results.failed.count | int - lifs_baseline_ping_test_results.failed.count | int }}"
             diff_records: "{{ lifs_ping_test_results.failed.records | difference(lifs_baseline_ping_test_results.failed.records) }}"
 
-    - name: Log of lifs_diff_ping_test_results
+    - name: Log of lifs_diff_ping_test_results count
       ansible.builtin.debug:
-        var: lifs_diff_ping_test_results
+        var: lifs_diff_ping_test_results['diff_count']
     #- name: set lifs_test_results_diff
 
     # - name: Show in git diff format
