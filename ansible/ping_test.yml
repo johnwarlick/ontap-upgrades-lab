@@ -25,9 +25,9 @@
   tasks:
   - name: Log of lifs to ping test
     ansible.builtin.debug: 
-      msg: | 
+      msg: > 
           {% for lif in  lifs_to_ping_test %}
-            - {{ lif.ip.address }} ({{ lif.name }})
+          - {{ lif.ip.address }} ({{ lif.name }}) 
           {% endfor %}
   
   - name: End playbook for host if there are no lifs to run ping tests against
