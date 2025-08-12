@@ -166,7 +166,7 @@
       ansible.builtin.set_fact: 
         new_image_name: "{{ (node_image_new_package.msg.records | first).image }}"
       
-    - name: system image modify -node {{ node }} -image {{ new_image_name }} -isdefault true
+    - name: "`system image modify -node {{ node }} -image {{ new_image_name }} -isdefault true`"
       netapp.ontap.na_ontap_rest_cli: 
         command: 'system/node/image'
         params: 
@@ -178,8 +178,8 @@
       register: set_new_node_image
 
     - name: |
-        Confirm {{ new_image_name }} {{ target_ontap_version }} is set to default
-        (`system node image show`)
+        "Confirm {{ new_image_name }} {{ target_ontap_version }} is set to default
+        (`system node image show`)"
       netapp.ontap.na_ontap_rest_cli: 
         command: 'system/node/image'
         params: 
@@ -193,8 +193,8 @@
         var: verify_node_image_set.msg.records | dicts_to_table 
 
     - name: >
-        Set new_package_is_default
-        (verify_node_image_set -> filter by image == {{ new_image_name }} -> map by isdefault) 
+        "Set new_package_is_default
+        (verify_node_image_set -> filter by image == {{ new_image_name }} -> map by isdefault)" 
       ansible.builtin.set_fact: 
         new_package_is_default: "{{ verify_node_image_set.msg.records | 
             selectattr('image', 'equalto', new_image_name) | 
@@ -210,7 +210,7 @@
       when: false in new_package_is_default
 
     - name: >
-        storage failover takeover -ofnode {{ node }} -option {{ takeover_option }} -override-vetoes {{ override_vetoes }}
+        "storage failover takeover -ofnode {{ node }} -option {{ takeover_option }} -override-vetoes {{ override_vetoes }}"
       netapp.ontap.na_ontap_rest_cli: 
         command: 'storage/failover/takeover'
         body: 
@@ -244,7 +244,7 @@
         seconds: "{{ pause_in_seconds_between_takeover_giveback }}"
       when: node_state != 'waiting_for_giveback'
 
-    - name: storage failover giveback -ofnode {{ node }} -override-vetoes {{ override_vetoes }}
+    - name: "storage failover giveback -ofnode {{ node }} -override-vetoes {{ override_vetoes }}"
       netapp.ontap.na_ontap_rest_cli: 
         command: 'storage/failover/giveback'
         body: 
@@ -253,7 +253,7 @@
         verb: "POST"
       register: giveback
     
-    - name: /cluster/nodes/{{ node_info.uuid }}?fields=state,ha.giveback.state until  until we get "up"
+    - name: "/cluster/nodes/{{ node_info.uuid }}?fields=state,ha.giveback.state until  until we get 'up'"
       netapp.ontap.na_ontap_restit:
         api: cluster/nodes/{{ node_info.uuid }}
         query:
@@ -264,7 +264,7 @@
       retries: "{{ failover_status_retries }}"
       delay: "{{ failover_status_delay }}" 
 
-    - name: /cluster/nodes/{{ node_info.uuid }}?fields=ha until we get "nothing_to_giveback"
+    - name: "/cluster/nodes/{{ node_info.uuid }}?fields=ha until we get 'nothing_to_giveback'"
       netapp.ontap.na_ontap_restit:
         api: cluster/nodes/{{ ha_partner.uuid }}
         query:
@@ -275,7 +275,7 @@
       delay: "{{ failover_status_delay }}" 
     when: node_state == 'waiting_for_giveback' or takeover_status is defined
 
-  - name: Validate ports and revert LIFs (`net port show -node {{ node }}`)
+  - name: "Validate ports and revert LIFs (`net port show -node {{ node }}`)"
     block: 
     - name: net port show -node {{ node }}
       netapp.ontap.na_ontap_rest_cli: 
