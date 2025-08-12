@@ -135,7 +135,7 @@
 
   - name: Migrate all lifs and initiate takeover
     block: 
-    - name: net int migrate-all -node <node> 
+    - name: net int migrate-all -node {{ node }}
       netapp.ontap.na_ontap_rest_cli: 
         command: 'network/interface/migrate-all'
         body: 
@@ -210,7 +210,7 @@
       when: false in new_package_is_default
 
     - name: >
-        storage failover takeover -ofnode <node> -option {{ takeover_option }} -override-vetoes {{ override_vetoes }}
+        storage failover takeover -ofnode {{ node }} -option {{ takeover_option }} -override-vetoes {{ override_vetoes }}
       netapp.ontap.na_ontap_rest_cli: 
         command: 'storage/failover/takeover'
         body: 
@@ -244,7 +244,7 @@
         seconds: "{{ pause_in_seconds_between_takeover_giveback }}"
       when: node_state != 'waiting_for_giveback'
 
-    - name: storage failover giveback -ofnode <node> -override-vetoes {{ override_vetoes }}
+    - name: storage failover giveback -ofnode {{ node }} -override-vetoes {{ override_vetoes }}
       netapp.ontap.na_ontap_rest_cli: 
         command: 'storage/failover/giveback'
         body: 
@@ -275,9 +275,9 @@
       delay: "{{ failover_status_delay }}" 
     when: node_state == 'waiting_for_giveback' or takeover_status is defined
 
-  - name: Validate ports and revert LIFs (`net port show -node <node>`)
+  - name: Validate ports and revert LIFs (`net port show -node {{ node }}`)
     block: 
-    - name: net port show -node <node>
+    - name: net port show -node {{ node }}
       netapp.ontap.na_ontap_rest_cli: 
         command: 'network/port'
         params: 
