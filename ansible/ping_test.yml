@@ -97,7 +97,7 @@
 
     - name: Log of lifs_diff_ping_test_results count
       ansible.builtin.debug:
-        var: lifs_diff_ping_test_results['diff_count']
+        var: lifs_diff_ping_test_results.failed.diff_count
     #- name: set lifs_test_results_diff
 
     # - name: Show in git diff format
