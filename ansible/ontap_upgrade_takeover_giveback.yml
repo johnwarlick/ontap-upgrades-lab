@@ -147,13 +147,13 @@
       include_tasks: tasks/get_node_lifs.yml
 
     # Set new image to be default image for this node 
-    - name: "Get image name for {{ ontap_package_version }} on node {{ node }}"
+    - name: "Get image name for {{ target_ontap_version }} on node {{ node }}"
       netapp.ontap.na_ontap_rest_cli: 
         command: 'system/node/image'
         params: 
           fields: "image"
           node: "{{ node }}"
-          version: "*{{ ontap_package_version }}"
+          version: "*{{ target_ontap_version }}"
         verb: "GET"
       register: node_image_new_package
 
@@ -173,7 +173,7 @@
       register: set_new_node_image
 
     - name: |
-        Confirm {{ new_image_name }} {{ ontap_package_version }} is set to default
+        Confirm {{ new_image_name }} {{ target_ontap_version }} is set to default
         (`system node image show`)
       netapp.ontap.na_ontap_rest_cli: 
         command: 'system/node/image'
