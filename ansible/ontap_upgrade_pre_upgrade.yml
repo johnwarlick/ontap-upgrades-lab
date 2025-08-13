@@ -203,7 +203,7 @@
               command: 'system/node/image'
               params: 
                 fields: "image,node,version"
-                version: "*{{ ontap_package_version }}*"
+                version: "{{ ontap_package_version }}"
               verb: "GET"
             register: confirm_node_images_present
 
