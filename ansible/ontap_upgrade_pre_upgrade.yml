@@ -117,83 +117,96 @@
        
   - name: Get the image into each node's package repo
     block:
-    - include_tasks: tasks/check_node_images.yml
-      vars: 
-        nodes_list: "{{ nodes_info }}"
-    - block: 
-      - name: log of nodes_need_new_image
-        ansible.builtin.debug:
-          var: nodes_need_new_image | map(attribute='name')
-        when: nodes_need_new_image is defined
+      - include_tasks: tasks/check_node_images.yml
+        vars: 
+          nodes_list: "{{ nodes_info }}"
       
-      - name: >
-          Check on status for each node 
-          (system node image show-update-progress -node <node>) 
-        netapp.ontap.na_ontap_rest_cli: 
-          command: 'system/node/image/show-update-progress'
-          body: 
-            node: "{{ item.name }}"
-          verb: "POST"
-        register: check_if_node_image_upload_in_progress
-        loop: "{{ nodes_need_new_image }}"
-        loop_control: 
-          label: "{{ item.name}}"
+      - block: 
+          - name: log of nodes_need_new_image
+            ansible.builtin.debug:
+              var: nodes_need_new_image | map(attribute='name')
+            when: nodes_need_new_image is defined
+          
+          - name: >
+              Check on status for each node 
+              (system node image show-update-progress -node <node>) 
+            netapp.ontap.na_ontap_rest_cli: 
+              command: 'system/node/image/show-update-progress'
+              body: 
+                node: "{{ item.name }}"
+              verb: "POST"
+            register: check_if_node_image_upload_in_progress
+            loop: "{{ nodes_need_new_image }}"
+            loop_control: 
+              label: "{{ item.name}}"
 
-      - name: Build list of only nodes with no update already in progress 
-        ansible.builtin.set_fact: 
-          nodes_nothing_in_progress: "{{ check_if_node_image_upload_in_progress.results | 
-                  selectattr('msg.cli_output', 'search', node_image_no_update_in_progress_text) | 
-                  map(attribute='item')}}"
+          - name: Build list of only nodes with no update already in progress 
+            ansible.builtin.set_fact: 
+              nodes_nothing_in_progress: "{{ check_if_node_image_upload_in_progress.results | 
+                      selectattr('msg.cli_output', 'search', node_image_no_update_in_progress_text) | 
+                      map(attribute='item')}}"
 
-      - name: Log of nodes_nothing_in_progress
-        ansible.builtin.debug: 
-          var: nodes_nothing_in_progress | map(attribute='name')
+          - name: Log of nodes_nothing_in_progress
+            ansible.builtin.debug: 
+              var: nodes_nothing_in_progress | map(attribute='name')
 
-      - name: >
-          "system node image update -node <node> -background true -package {{ ontap_package_url }} -replace-package true"
-        netapp.ontap.na_ontap_rest_cli: 
-          command: 'system/node/image/update'
-          params: 
-            node: "{{ item.name }}"
-          body:   
-            package: "{{ ontap_package_url }}"
-            replace-package: true
-            background: true
-          verb: "PATCH"
-        register: node_image_upload 
-        loop: "{{ nodes_nothing_in_progress }}"
-        loop_control: 
-          label: "{{ item.name}}"
+          - name: >
+              "system node image update -node <node> -background true -package {{ ontap_package_url }} -replace-package true"
+            netapp.ontap.na_ontap_rest_cli: 
+              command: 'system/node/image/update'
+              params: 
+                node: "{{ item.name }}"
+              body:   
+                package: "{{ ontap_package_url }}"
+                replace-package: true
+                background: true
+              verb: "PATCH"
+            register: node_image_upload 
+            loop: "{{ nodes_nothing_in_progress }}"
+            loop_control: 
+              label: "{{ item.name}}"
 
-      - name: "Log of node_image_upload"
-        ansible.builtin.debug: 
-          var: node_image_upload.results | map(attribute='msg')
-      
-      - name: Give it 10 seconds
-        ansible.builtin.pause: 
-          seconds: 10 
+          - name: "Log of node_image_upload"
+            ansible.builtin.debug: 
+              var: node_image_upload.results | map(attribute='msg')
+          
+          - name: Give it 10 seconds
+            ansible.builtin.pause: 
+              seconds: 10 
 
-      - name: >
-          Check on status until we get success or failure
-          (system node image show-update-progress)
-        netapp.ontap.na_ontap_rest_cli: 
-          command: 'system/node/image/show-update-progress'
-          verb: "POST"
-        register: node_image_upload_progress
-        until: node_image_no_update_in_progress_text in node_image_upload_progress.msg.cli_output 
-            or node_image_update_failure_text in node_image_upload_progress.msg.cli_output
-        retries: 30
-        delay: 20
+          - name: >
+              Check on status until we get success or failure
+              (system node image show-update-progress)
+            netapp.ontap.na_ontap_rest_cli: 
+              command: 'system/node/image/show-update-progress'
+              verb: "POST"
+            register: node_image_upload_progress
+            until: node_image_no_update_in_progress_text in node_image_upload_progress.msg.cli_output 
+                or node_image_update_failure_text in node_image_upload_progress.msg.cli_output
+            retries: 30
+            delay: 20
 
-      - name: 
-        ansible.builtin.debug: 
-          var: node_image_upload_progress
+          - name: 
+            ansible.builtin.debug: 
+              var: node_image_upload_progress
 
-      - name: "Fail playbook if '{{ node_image_update_failure_text }}' is found in command return"
-        ansible.builtin.fail: 
-          msg: "{{ node_image_upload_progress.msg.cli_output }}"
-        when: node_image_update_failure_text in node_image_upload_progress.msg.cli_output
-      
-      when: nodes_need_new_image is defined 
+          - name: "Fail playbook if '{{ node_image_update_failure_text }}' is found in command return"
+            ansible.builtin.fail: 
+              msg: "{{ node_image_upload_progress.msg.cli_output }}"
+            when: node_image_update_failure_text in node_image_upload_progress.msg.cli_output
 
+          # check again, fail if still some nodes missing 
+          - include_tasks: tasks/check_node_images.yml
+            vars: 
+              nodes_list: "{{ nodes_info }}"
+
+          - name: Fail playbook if there are still nodes needing the image uploaded somehow
+            ansible.builtin.fail:
+              msg: "There are still nodes missing the new image: {{ nodes_need_new_image }}"
+            when: nodes_need_new_image is defined     
+        
+        # end inner blcok  
+        when: nodes_need_new_image is defined 
+
+    # end outer block
     tags: ["image", "upload_to_nodes"]
