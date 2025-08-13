@@ -209,8 +209,8 @@
 
           - name: Fail playbook if there are still nodes needing the image uploaded somehow
             ansible.builtin.fail:
-              msg: "There are still nodes missing the new image: {{ nodes_need_new_image }}"
-            when: confirm_node_images_present.msg.records | length > 0     
+              msg: "There are still nodes missing the new image: {{ confirm_node_images_present.msg.records | map(attribute='name') }}"
+            when: confirm_node_images_present.msg.records | length != nodes_list | length      
         
         # end inner blcok  
         when: nodes_need_new_image is defined 
