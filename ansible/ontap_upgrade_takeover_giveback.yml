@@ -68,19 +68,20 @@
 
   - name: Get HA Partner info  (`netapp.ontap.na_ontap_restit`)
     block: 
-    - netapp.ontap.na_ontap_restit:
-        api: cluster/nodes/{{ node_info.ha.partners.0.uuid }}
-        query:
-          fields: "{{ node_query.fields }}"
-      register: get_ha_partner
+      - netapp.ontap.na_ontap_restit:
+          api: cluster/nodes/{{ node_info.ha.partners.0.uuid }}
+          query:
+            fields: "{{ node_query.fields }}"
+        register: get_ha_partner
 
-    - name: Set node_ha_partner
-      ansible.builtin.set_fact:
-        ha_partner: "{{ get_ha_partner.response }}" 
+      - name: Set node_ha_partner
+        ansible.builtin.set_fact:
+          ha_partner: "{{ get_ha_partner.response }}" 
+
     rescue: 
-    - name: End playbook
-      ansible.builtin.fail: 
-        msg: "Ending playbook run as the HA partner info is required to determine stasis/failover/giveback status. See error above."
+      - name: End playbook
+        ansible.builtin.fail: 
+          msg: "Ending playbook run as the HA partner info is required to determine stasis/failover/giveback status. See error above."
 
   - name: Set in_takeover 
     ansible.builtin.set_fact:
@@ -135,186 +136,188 @@
 
   - name: Migrate all lifs and initiate takeover
     block: 
-    - name: net int migrate-all -node {{ node }}
-      netapp.ontap.na_ontap_rest_cli: 
-        command: 'network/interface/migrate-all'
-        body: 
-          node: "{{ node }}"
-        verb: "POST"
-      register: net_int_migrate_all
+      - name: net int migrate-all -node {{ node }}
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'network/interface/migrate-all'
+          body: 
+            node: "{{ node }}"
+          verb: "POST"
+        register: net_int_migrate_all
 
-    - name: Get node lifs post migrate command 
-      include_tasks: tasks/get_node_lifs.yml
+      - name: Get node lifs post migrate command 
+        include_tasks: tasks/get_node_lifs.yml
 
-    # Set new image to be default image for this node 
-    - name: "Get image name for {{ target_ontap_version }} on node {{ node }}"
-      netapp.ontap.na_ontap_rest_cli: 
-        command: 'system/node/image'
-        params: 
-          fields: "image"
-          node: "{{ node }}"
-          version: "*{{ target_ontap_version }}"
-        verb: "GET"
-      register: node_image_new_package
+      # Set new image to be default image for this node 
+      - name: "Get image name for {{ target_ontap_version }} on node {{ node }}"
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'system/node/image'
+          params: 
+            fields: "image"
+            node: "{{ node }}"
+            version: "*{{ target_ontap_version }}"
+          verb: "GET"
+        register: node_image_new_package
 
-    - name: Fail playbook if we could not find the image
-      ansible.builtin.fail:
-        msg: "Could not find {{ target_ontap_version }} in `system node image show -node {{ node }}`"
-      when: node_image_new_package.msg.records | length == 0 
+      - name: Fail playbook if we could not find the image
+        ansible.builtin.fail:
+          msg: "Could not find {{ target_ontap_version }} in `system node image show -node {{ node }}`"
+        when: node_image_new_package.msg.records | length == 0 
 
-    - name: Set new_image_name
-      ansible.builtin.set_fact: 
-        new_image_name: "{{ (node_image_new_package.msg.records | first).image }}"
-      
-    - name: "`system image modify -node {{ node }} -image {{ new_image_name }} -isdefault true`"
-      netapp.ontap.na_ontap_rest_cli: 
-        command: 'system/node/image'
-        params: 
-          node: "{{ node }}"
-          image: "{{ new_image_name }}"
-        body: 
-          isdefault: true 
-        verb: "PATCH"
-      register: set_new_node_image
+      - name: Set new_image_name
+        ansible.builtin.set_fact: 
+          new_image_name: "{{ (node_image_new_package.msg.records | first).image }}"
+        
+      - name: "`system image modify -node {{ node }} -image {{ new_image_name }} -isdefault true`"
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'system/node/image'
+          params: 
+            node: "{{ node }}"
+            image: "{{ new_image_name }}"
+          body: 
+            isdefault: true 
+          verb: "PATCH"
+        register: set_new_node_image
 
-    - name: |
-        "Confirm {{ new_image_name }} {{ target_ontap_version }} is set to default
-        (`system node image show`)"
-      netapp.ontap.na_ontap_rest_cli: 
-        command: 'system/node/image'
-        params: 
-          fields: "image,node,version,version,isdefault,iscurrent"
-          node: "{{ node }}"
-        verb: "GET"
-      register: verify_node_image_set
+      - name: |
+          "Confirm {{ new_image_name }} {{ target_ontap_version }} is set to default
+          (`system node image show`)"
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'system/node/image'
+          params: 
+            fields: "image,node,version,version,isdefault,iscurrent"
+            node: "{{ node }}"
+          verb: "GET"
+        register: verify_node_image_set
 
-    - name: Log of verify_node_image_set
-      ansible.builtin.debug: 
-        var: verify_node_image_set.msg.records | dicts_to_table 
+      - name: Log of verify_node_image_set
+        ansible.builtin.debug: 
+          var: verify_node_image_set.msg.records | dicts_to_table 
 
-    - name: >
-        "Set new_package_is_default
-        (verify_node_image_set -> filter by image == {{ new_image_name }} -> map by isdefault)" 
-      ansible.builtin.set_fact: 
-        new_package_is_default: "{{ verify_node_image_set.msg.records | 
-            selectattr('image', 'equalto', new_image_name) | 
-            map(attribute='isdefault') }}"
+      - name: >
+          "Set new_package_is_default
+          (verify_node_image_set -> filter by image == {{ new_image_name }} -> map by isdefault)" 
+        ansible.builtin.set_fact: 
+          new_package_is_default: "{{ verify_node_image_set.msg.records | 
+              selectattr('image', 'equalto', new_image_name) | 
+              map(attribute='isdefault') }}"
 
-    - name: log   
-      ansible.builtin.debug:
-        var: new_package_is_default
+      - name: log   
+        ansible.builtin.debug:
+          var: new_package_is_default
 
-    - name: Fail playbook if {{ new_image_name }} isn't set to default
-      ansible.builtin.fail:
-        msg: "{{ new_image_name }} must be set as the default image for {{ node }} in order for upgrade to take place"
-      when: false in new_package_is_default
+      - name: Fail playbook if {{ new_image_name }} isn't set to default
+        ansible.builtin.fail:
+          msg: "{{ new_image_name }} must be set as the default image for {{ node }} in order for upgrade to take place"
+        when: false in new_package_is_default
 
-    - name: >
-        "storage failover takeover -ofnode {{ node }} -option {{ takeover_option }} -override-vetoes {{ override_vetoes }}"
-      netapp.ontap.na_ontap_rest_cli: 
-        command: 'storage/failover/takeover'
-        body: 
-          ofnode: "{{ node }}"
-          option: "{{ takeover_option }}"
-          override-vetoes: "{{ override_vetoes }}"
-        verb: "POST"
-      register: takeover
+      - name: >
+          "storage failover takeover -ofnode {{ node }} -option {{ takeover_option }} -override-vetoes {{ override_vetoes }}"
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'storage/failover/takeover'
+          body: 
+            ofnode: "{{ node }}"
+            option: "{{ takeover_option }}"
+            override-vetoes: "{{ override_vetoes }}"
+          verb: "POST"
+        register: takeover
     when: (at_stasis is defined or version_mismatch is defined) and in_takeover is not defined
 
   - name: Check takeover status until we get "waiting for giveback"
     block: 
-    - name: /cluster/nodes/{{ node_info.uuid }}?fields=state,ha until state is waiting_for_giveback
-      netapp.ontap.na_ontap_restit:
-        api: cluster/nodes/{{ node_info.uuid }}
-        query:
-          fields: "state,ha"
-      register: takeover_status
-      until: takeover_status.response.state is defined 
-              and takeover_status.response.state == 'waiting_for_giveback'
-      retries: "{{ failover_status_retries }}"
-      delay: "{{ failover_status_delay }}"     
+      - name: /cluster/nodes/{{ node_info.uuid }}?fields=state,ha until state is waiting_for_giveback
+        netapp.ontap.na_ontap_restit:
+          api: cluster/nodes/{{ node_info.uuid }}
+          query:
+            fields: "state,ha"
+        register: takeover_status
+        until: takeover_status.response.state is defined 
+                and takeover_status.response.state == 'waiting_for_giveback'
+        retries: "{{ failover_status_retries }}"
+        delay: "{{ failover_status_delay }}"     
         
     when: takeover is defined or in_takeover is defined 
  
   - name: Do the giveback
     block: 
-    # only run the delay if it wasn't already in waiting_for_giveback state prior to this playbook run
-    - name: Give it {{ pause_in_seconds_between_takeover_giveback }} seconds before we try giveback
-      ansible.builtin.pause:
-        seconds: "{{ pause_in_seconds_between_takeover_giveback }}"
-      when: node_state != 'waiting_for_giveback'
+      # only run the delay if it wasn't already in waiting_for_giveback state prior to this playbook run
+      - name: Give it {{ pause_in_seconds_between_takeover_giveback }} seconds before we try giveback
+        ansible.builtin.pause:
+          seconds: "{{ pause_in_seconds_between_takeover_giveback }}"
+        when: node_state != 'waiting_for_giveback'
 
-    - name: "storage failover giveback -ofnode {{ node }} -override-vetoes {{ override_vetoes }}"
-      netapp.ontap.na_ontap_rest_cli: 
-        command: 'storage/failover/giveback'
-        body: 
-          ofnode: "{{ node }}"
-          override-vetoes: "{{ override_vetoes }}"
-        verb: "POST"
-      register: giveback
-    
-    - name: "/cluster/nodes/{{ node_info.uuid }}?fields=state,ha.giveback.state until  until we get 'up'"
-      netapp.ontap.na_ontap_restit:
-        api: cluster/nodes/{{ node_info.uuid }}
-        query:
-          fields: "state,ha.giveback.state"
-      register: giveback_status
-      until: giveback_status.response.state == 'up' 
-              and giveback_status.response.ha.giveback.state is defined 
-      retries: "{{ failover_status_retries }}"
-      delay: "{{ failover_status_delay }}" 
+      - name: "storage failover giveback -ofnode {{ node }} -override-vetoes {{ override_vetoes }}"
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'storage/failover/giveback'
+          body: 
+            ofnode: "{{ node }}"
+            override-vetoes: "{{ override_vetoes }}"
+          verb: "POST"
+        register: giveback
+      
+      - name: "/cluster/nodes/{{ node_info.uuid }}?fields=state,ha.giveback.state until  until we get 'up'"
+        netapp.ontap.na_ontap_restit:
+          api: cluster/nodes/{{ node_info.uuid }}
+          query:
+            fields: "state,ha.giveback.state"
+        register: giveback_status
+        until: giveback_status.response.state == 'up' 
+                and giveback_status.response.ha.giveback.state is defined 
+        retries: "{{ failover_status_retries }}"
+        delay: "{{ failover_status_delay }}" 
 
-    - name: "/cluster/nodes/{{ node_info.uuid }}?fields=ha until we get 'nothing_to_giveback'"
-      netapp.ontap.na_ontap_restit:
-        api: cluster/nodes/{{ ha_partner.uuid }}
-        query:
-          fields: "ha"
-      register: partner_giveback_status
-      until: partner_giveback_status.response.ha.giveback.state == 'nothing_to_giveback'
-      retries: "{{ failover_status_retries }}"
-      delay: "{{ failover_status_delay }}" 
+      - name: "/cluster/nodes/{{ node_info.uuid }}?fields=ha until we get 'nothing_to_giveback'"
+        netapp.ontap.na_ontap_restit:
+          api: cluster/nodes/{{ ha_partner.uuid }}
+          query:
+            fields: "ha"
+        register: partner_giveback_status
+        until: partner_giveback_status.response.ha.giveback.state == 'nothing_to_giveback'
+        retries: "{{ failover_status_retries }}"
+        delay: "{{ failover_status_delay }}" 
+
     when: node_state == 'waiting_for_giveback' or takeover_status is defined
 
   - name: "Validate ports and revert LIFs (`net port show -node {{ node }}`)"
     block: 
-    - name: net port show -node {{ node }}
-      netapp.ontap.na_ontap_rest_cli: 
-        command: 'network/port'
-        params: 
-          fields: "port,ipspace,broadcast-domain,link,health-status"
-          node: "{{ node }}"
-        verb: "GET"
-      register: net_port_show
-
-    - name: Log of net_port_show
-      ansible.builtin.debug: 
-        var: net_port_show.msg.records | dicts_to_table 
-
-    - name: net int revert * 
-      block: 
-      - netapp.ontap.na_ontap_rest_cli: 
-          command: 'network/interface/revert'
+      - name: net port show -node {{ node }}
+        netapp.ontap.na_ontap_rest_cli: 
+          command: 'network/port'
           params: 
-            lif: "*"
-          verb: "PATCH"
-        register: net_int_revert
-      rescue: 
-      - name: "`net int revert *` failed. Pause for 20 seconds before proceeding."
-        ansible.builtin.pause: 
-          seconds: 20
+            fields: "port,ipspace,broadcast-domain,link,health-status"
+            node: "{{ node }}"
+          verb: "GET"
+        register: net_port_show
 
-    - name: Get node lifs post revert command
-      include_tasks: tasks/get_node_lifs.yml
+      - name: Log of net_port_show
+        ansible.builtin.debug: 
+          var: net_port_show.msg.records | dicts_to_table 
 
-    - name: Check to see if any of the node_lifs still show not home 
-      netapp.ontap.na_ontap_restit:
-        api: network/ip/interfaces
-        query:
-          name: "{{ node_lifs | map(attribute='name') | join('|') }}"
-          location.is_home: "false"
-      register: check_lifs_not_home
-    
-    - name: Log of check_lifs_not_home
-      ansible.builtin.debug: 
-        var: check_lifs_not_home
+      - name: net int revert * 
+        block: 
+          - netapp.ontap.na_ontap_rest_cli: 
+              command: 'network/interface/revert'
+              params: 
+                lif: "*"
+              verb: "PATCH"
+            register: net_int_revert
+
+        rescue: 
+          - name: "`net int revert *` failed. Pause for 20 seconds before proceeding."
+            ansible.builtin.pause: 
+              seconds: 20
+
+      - name: Get node lifs post revert command
+        include_tasks: tasks/get_node_lifs.yml
+
+      - name: Check to see if any of the node_lifs still show not home 
+        netapp.ontap.na_ontap_restit:
+          api: network/ip/interfaces
+          query:
+            name: "{{ node_lifs | map(attribute='name') | join('|') }}"
+            location.is_home: "false"
+        register: check_lifs_not_home
+      
+      - name: Log of check_lifs_not_home
+        ansible.builtin.debug: 
+          var: check_lifs_not_home
     tags: ["revert_lifs"]
