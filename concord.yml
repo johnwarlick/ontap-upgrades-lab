@@ -304,12 +304,15 @@ flows:
 
           # Manual effort for ONTAP Upgrade ConcordMetric is estimated for a two node cluster, therefore
           # Workflow Impact = 
-          #    (metrics_workflow_impact * (sequential_nodes_list - (2*upgrade_clusters))) 
+          #    (sequential_nodes_list / 2) 
           #      + 
           #   (lifs_count * ((metrics_workflow_impact_lifs_increment/50)*sequential_nodes_list))
           # The lifs increment isn't going to be super precise in this formula, but it's close enough for our purpose
+          # Example doing a 6 node cluster, the base impact would be 3 because one ha pair is included in the base manual effort
+          # so we would simply add 1 for each additional ha pair. 
+          # For an 8 node cluster, the base impact would be 4, etc
         - set: 
-            metrics_workflow_impact_nodes: ${metrics_workflow_impact * (sequential_nodes_list.size() - (2 * upgrade_clusters.size()))}
+            metrics_workflow_impact_nodes: ${sequential_nodes_list.size() / 2}
         - set:
             metrics_workflow_impact: ${metrics_workflow_impact_nodes + (lifs_count * ((metrics_workflow_impact_lifs_increment/50)*sequential_nodes_list.size()))}
 
